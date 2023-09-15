@@ -9,7 +9,11 @@ df <- read_csv("data/combined_data.csv")
 
 # tidy dataframe ----------------------------------------------------------
 
-tidy_df <- df |> pivot_longer(matches("^\\d{4}"),names_to = "year", values_to = "val", names_pattern = "(\\d{4}).*") |> 
+
+tidy_df <-
+  df |>
+# df |> filter(!str_detect(`Series Name`, "60")) |> 
+  pivot_longer(matches("^\\d{4}"),names_to = "year", values_to = "val", names_pattern = "(\\d{4}).*") |> 
   select(-`Country Code`, -`Series Code`) |> 
   pivot_wider(names_from = `Series Name`, values_from = val) |> 
   rename(country = `Country Name`, gdp = `GDP per capita (current US$)`, pop = `Population, total`) |> 
@@ -23,7 +27,7 @@ tidy_df <- df |> pivot_longer(matches("^\\d{4}"),names_to = "year", values_to = 
          year = as.integer(year)) 
 
 prop_pop <- tidy_df |> 
-  group_by(year, subgroup) |> 
+  group_by(year, subgroup, metric) |> 
   filter(!is.na(pop), !is.na(gdp), !is.na(value)) |> 
   arrange(gdp, .by_group = TRUE) |> 
   mutate(cumpop = cumsum(pop),
@@ -44,5 +48,17 @@ mod_results |>
   ggplot(aes(year, estimate)) +
   geom_point() +
   geom_linerange(aes(ymin = conf.low, ymax = conf.high)) +
-  facet_grid(metric ~ subgroup)
+  facet_grid(metric ~ subgroup, scales = "free_y")
 
+
+tidy_df |> 
+  filter(year %in% seq(1992, 2020, by = 5)) |> 
+  ggplot(aes(gdp, value)) +
+  geom_point() +
+  facet_grid(metric~year)
+
+tidy_df |> 
+  filter(year == 2020 | year == 1990, metric == "inf_mort", subgroup == "total") |> 
+  ggplot(aes(x = metric, y = value)) +
+  geom_jitter() +
+  facet_wrap(~year)
