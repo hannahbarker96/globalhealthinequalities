@@ -1,7 +1,7 @@
 library(jsonlite)
 library(tidyverse)
 
-codes <- read_csv("data/country_codes.csv")
+codes <- read_csv("data/included_countries.csv")
 
 read_worldbank_api <- function(indicator, series) {
   
