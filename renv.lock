@@ -72,6 +72,22 @@
       ],
       "Hash": "45f0398006e83a5b10b72a90663d8d8c"
     },
+    "SPHSUgraphs": {
+      "Package": "SPHSUgraphs",
+      "Version": "1.0.0",
+      "Source": "GitHub",
+      "RemoteType": "github",
+      "RemoteHost": "api.github.com",
+      "RemoteUsername": "andrewbaxter439",
+      "RemoteRepo": "SPHSUgraphs",
+      "RemoteRef": "master",
+      "RemoteSha": "da224f85aa7b5c087b2e4c27f089645f9686241d",
+      "Requirements": [
+        "R",
+        "ggplot2"
+      ],
+      "Hash": "eab3ff1d7a69508150d8e9692b33d2de"
+    },
     "askpass": {
       "Package": "askpass",
       "Version": "1.1",
