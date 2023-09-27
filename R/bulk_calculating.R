@@ -20,8 +20,8 @@ tidy_df <-
   pivot_longer(matches("^\\d{4}"),names_to = "year", values_to = "val", names_pattern = "(\\d{4}).*") |> 
   select(-`Series Code`) |> 
   pivot_wider(names_from = `Series Name`, values_from = val) |> 
-  rename(country = `Country Name`, code = `Country Code`, gdp = `GDP per capita (current US$)`, pop = `Population, total`) |> 
-  pivot_longer(-c(country, code, year, gdp, pop), names_to = "metric") |> 
+  rename(country = `Country Name`, code = `Country Code`, gdp_pc = `GDP per capita (current US$)`, pop = `Population, total`) |> 
+  pivot_longer(-c(country, code, year, gdp_pc, pop), names_to = "metric") |> 
   mutate(subgroup = str_extract(metric, "male|female|total") |> replace_na("total") |> str_to_sentence(),
          metric = str_replace(metric, "Mortality rate,", "inf_mort") |> 
            str_replace("Life expectancy ", "le") |> 
@@ -32,8 +32,8 @@ tidy_df <-
 
 prop_pop <- tidy_df |> 
   group_by(year, subgroup, metric) |> 
-  filter(!is.na(pop), !is.na(gdp), !is.na(value)) |> 
-  arrange(gdp, .by_group = TRUE) |> 
+  filter(!is.na(pop), !is.na(gdp_pc), !is.na(value)) |> 
+  arrange(gdp_pc, .by_group = TRUE) |> 
   mutate(cumpop = cumsum(pop),
          midpop = (cumpop + lag(cumpop, default = 0))/2,
          prop_midpop = midpop / max(pop))
@@ -51,9 +51,10 @@ sii_results <- models |>
   select(year, metric, subgroup, sii = estimate, sii_se = std.error, sii_cl = conf.low, sii_cu = conf.high)
 
 sii_results |> 
-  mutate(labels = label_vars[metric]) |> 
+  mutate(labels = label_vars[metric]) |>
   ggplot(aes(year, sii)) +
   geom_point() +
+  geom_line() +
   # geom_linerange(aes(ymin = sii_cl, ymax = sii_cu)) +
   geom_ribbon(aes(ymin = sii_cl, ymax = sii_cu), alpha = 0.2) +
   facet_grid(labels ~ subgroup, scales = "free_y") +
@@ -68,6 +69,12 @@ ggsave("graphs/sii_ribbon.png", dpi = 400, height = 8, width = 12)
 mean_vals <- prop_pop |> 
   group_by(year, metric, subgroup) |> 
   summarise(mean_value = weighted.mean(value, w = pop), .groups = "drop")
+
+mean_vals |> 
+  ggplot(aes(year, mean_value)) + 
+  geom_point() + 
+  facet_grid(metric ~ subgroup, scales = "free_y") 
+
 
 sii_results |> 
   left_join(mean_vals, by = join_by(year, metric, subgroup)) |> 
@@ -103,3 +110,4 @@ tidy_df |>
   ggplot(aes(x = metric, y = value)) +
   geom_jitter() +
   facet_wrap(~year)
+
