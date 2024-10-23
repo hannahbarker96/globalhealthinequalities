@@ -93,3 +93,23 @@ new_full_data <- joined_health_data |>
 bind_rows(joined_health_data) |> 
   mutate(year = as.integer(year))
   
+joined_health_data |> 
+  filter(metric == "le_60") |> 
+  left_join(pop_sexes,
+            by = join_by(
+              country, code, year, subgroup
+            )) |> 
+  group_by(country, code, year) |> 
+  summarise(value = weighted.mean(value, w = sub_pop),
+            .groups = "drop") |> 
+  mutate(subgroup = "Total", metric = "le_60", label = "Life expectancy at age 60, total (years)") |> 
+  bind_rows(health_outcomes |> separate(variable, c("metric", "subgroup"), sep = "__")) |> 
+  bind_rows(
+    gdp_pc |> mutate(metric = variable, subgroup = "Total", .keep = "unused"),
+    total_pops |> mutate(metric = "pop", value = pop, subgroup = "Total", .keep = "unused")
+  ) |> 
+  pivot_wider(
+    names_from = year, 
+    values_from = value
+  ) |> 
+  write_csv("data/full_wide_data.csv")
