@@ -11,7 +11,7 @@ new_full_data |>
   ggplot(aes(year, perc_miss_outcome)) +
   geom_col()
 
-# Looks like 2022 has no data yet
+# Looks like 2023 has no data yet
 
 label_vars <- c(
   le_60 = "Life expectancy at age 60",
@@ -22,6 +22,12 @@ label_vars <- c(
 
 # SII calculations ---------------------------------------------------------
 
+multiplier_vals <- tibble::tribble(
+  ~metric, ~multiplier,
+  "inf_mort", -1,
+  "le_60", 1,
+  "le_birth", 1
+)
 
 
 prop_pop <- new_full_data |> 
@@ -30,8 +36,17 @@ prop_pop <- new_full_data |>
   arrange(gdp_pc, .by_group = TRUE) |> 
   mutate(cumpop = cumsum(pop),
          midpop = (cumpop + lag(cumpop, default = 0))/2,
-         prop_midpop = midpop / max(pop))
+         prop_midpop = midpop / sum(pop),
+         prop_pop = pop / sum(pop),
+         mean_value = weighted.mean(value, w = pop),
+         rel_value = value / mean_value) |> 
+  ungroup()
 
+prop_pop |> 
+  filter(year == 2000) |> 
+  ggplot(aes(prop_midpop, value, colour = subgroup)) +
+  stat_summary(geom = "point") +
+  facet_wrap(~metric)
 
 models <- prop_pop |> 
   nest(data = -c(year, subgroup, metric)) |> 
@@ -51,22 +66,22 @@ sii_results <- models |>
     sii_cl = conf.low,
     sii_cu = conf.high
   ) |> 
+  left_join(multiplier_vals, by = "metric") |> 
   mutate(
     labels = label_vars[metric],
-    across(c(sii, sii_cl, sii_cu), ~ if_else(metric == "inf_mort", .x * -1, .x))
+    across(c(sii, sii_cl, sii_cu), ~ .x * multiplier)
     ) 
 
-sii_results|>
+sii_results |>
   ggplot(aes(year, sii)) +
   geom_point() +
   geom_line() +
   geom_ribbon(aes(ymin = sii_cl, ymax = sii_cu), alpha = 0.2) +
   facet_grid(labels ~ subgroup, scales = "free_y") +
-  theme_sphsu_light() +
   labs(caption = "*per 1,000 live births") +
   ylab("Slope Index of Inequality") +
   xlab("Year") +
-  theme_sphsu_light()
+  theme_minimal()
 
 ggsave("graphs/sii_ribbon.png", dpi = 400, height = 8, width = 12)
 
@@ -79,11 +94,10 @@ sii_results |>
   geom_line() +
   geom_ribbon(aes(ymin = sii_cl, ymax = sii_cu), alpha = 0.2, colour = NA) +
   facet_grid(labels ~ fct_rev(comparison), scales = "free_y") +
-  theme_sphsu_light() +
   labs(caption = "*per 1,000 live births") +
   ylab("Slope Index of Inequality") +
   xlab("Year") +
-  theme_sphsu_light() +
+  theme_minimal() +
   scale_colour_manual(
     "Sex",
     breaks = c("Female", "Male"),
@@ -105,19 +119,20 @@ mean_vals <- prop_pop |>
 
 mean_vals |> 
   ggplot(aes(year, mean_value)) + 
-  geom_point() + 
+  stat_summary(geom = "point", fun = mean) + 
   facet_grid(metric ~ subgroup, scales = "free_y") 
 
 
 rii_results <- sii_results |> 
   left_join(mean_vals, by = join_by(year, metric, subgroup)) |> 
-  mutate(labels = label_vars[metric]) |> 
+  # mutate(labels = label_vars[metric]) |> 
   mutate(rii = sii / mean_value,
          rii_se = sii_se / mean_value,
          # cl_rii = conf.low / mean_value,  # Test for same value
          # cu_rii = conf.high / mean_value,
          rii_cl = rii + qnorm(0.025) * rii_se,
-         rii_cu = rii + qnorm(0.975) * rii_se)
+         rii_cu = rii + qnorm(0.975) * rii_se) |> 
+  mutate(across(c(rii, rii_cl, rii_cu), ~.x ^ (-1 * multiplier)))
 
 rii_results |> 
   ggplot(aes(year, rii)) +
@@ -129,7 +144,7 @@ rii_results |>
   labs(caption = "*per 1,000 live births") +
   ylab("Relative Index of Inequality") +
   xlab("Year") +
-  theme_sphsu_light()
+  theme_minimal()
 
 ggsave("graphs/rii_ribbon.png", dpi = 400, height = 8, width = 12)
 
@@ -142,11 +157,10 @@ rii_results |>
   geom_line() +
   geom_ribbon(aes(ymin = rii_cl, ymax = rii_cu), alpha = 0.2, colour = NA) +
   facet_grid(labels ~ fct_rev(comparison), scales = "free_y") +
-  theme_sphsu_light() +
   labs(caption = "*per 1,000 live births") +
-  ylab("Slope Index of Inequality") +
+  ylab("Relative Index of Inequality") +
   xlab("Year") +
-  theme_sphsu_light() +
+  theme_minimal() +
   scale_colour_manual(
     "Sex",
     breaks = c("Female", "Male"),
