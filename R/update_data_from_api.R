@@ -6,7 +6,7 @@ codes <- read_csv("data/included_countries.csv")
 read_worldbank_api <- function(indicator, series) {
   
   data_fetch <- read_json(
-    glue::glue("https://api.worldbank.org/v2/country/all/indicator/{indicator}?date=1990:2022&format=json&per_page=9000"),
+    glue::glue("https://api.worldbank.org/v2/country/all/indicator/{indicator}?date=1990:2023&format=json&per_page=9000"),
     simplifyVector = TRUE
   )
   
