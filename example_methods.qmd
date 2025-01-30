@@ -1,0 +1,747 @@
+---
+title: "Differing ways of calculating SII and RII"
+format: 
+  html:
+    toc: true
+editor: 
+  markdown: 
+    wrap: 72
+---
+
+```{r, include = FALSE}
+source("R/update_data_from_api.R")
+library(SPHSUgraphs)
+
+multiplier_vals <- tibble::tribble(
+  ~metric, ~multiplier,
+  "inf_mort", -1,
+  "le_60", 1,
+  "le_birth", 1
+)
+
+label_vars <- c(
+  le_60 = "Life expectancy at age 60",
+  le_birth = "Life expectancy at birth",
+  inf_mort = "Infant mortality rate*"
+)
+
+return_est_cis <- function(model, comparison, independent_vars = list(prop_midpop = 0:1), ...) {
+  comp <- marginaleffects::avg_comparisons(
+    model,
+    comparison = comparison,
+    variables = independent_vars,
+    vcov = "HC1",
+    ...
+  )
+  
+  
+  tibble(
+    estimate = comp$estimate,
+    se = comp$std.error,
+    conf.low = estimate + se * qnorm(0.025),
+    conf.high = estimate + se * qnorm(0.975)
+  )
+}
+```
+
+# Overview
+
+-   Different sources use different methods for SII and RII calculations
+-   Some of these are straightfoward but others may be more suitable
+-   SII and RII for rates (infant mortality) may be calculated
+    differently than from continuous variables (life expectancy)?
+
+# Straightforward route
+
+SII calculations are obtained by a linear regression of outcome across
+countries, ordered by GDP, with cumulative midpoint population
+proportion as exposure. RII is obtained by dividing slope by mean.
+
+Described e.g.
+[here](https://epid.blogspot.com/2013/05/slope-index-of-inequality-sii-and.html).
+[PHS](https://github.com/Public-Health-Scotland/measuring-inequalities/blob/master/inequality_index_calculations.R)
+and
+[ScotPHO](https://www.scotpho.org.uk/methods-and-data/measuring-health-inequalities/#siirii)
+also divide by mean (or overall value of population-wide rate).
+
+In this calculation:
+
+-   `SII = 0` would indicate equality: zero difference between highest
+    and lowest
+    -   Positive values indicate worsening outcomes as deprivation
+        increases
+    -   Negative outcomes indicate improving outcomes as deprivation
+        increases
+-   `RII = 0` would indicate equality (if SII is zero, dividing by any
+    number gives zero)
+    -   Similar directions of effects as SII (+ve/-ve)
+
+::: callout-note
+Infant mortality rated are 'reversed' as higher rates indicate worse
+outcomes.
+:::
+
+Linear model:
+
+$$
+Y = intercept + \beta_1*prop\_midpop
+$$
+
+-   $intercept$ is the outcome at the (theoretical) 0-ranked country
+-   $\beta_1$ is the SII - the difference between the 0- and 1-ranked
+    countries
+
+Calculated yearly by subgroup for each outcome:
+
+```{r}
+
+prop_pop <- new_full_data |> 
+  group_by(year, subgroup, metric) |> 
+  filter(!is.na(pop), !is.na(gdp_pc), !is.na(value)) |> 
+  arrange(gdp_pc, .by_group = TRUE) |> 
+  mutate(rank = row_number(gdp_pc), 
+         cumpop = cumsum(pop),
+         midpop = (cumpop + lag(cumpop, default = 0))/2,
+         prop_midpop = midpop / sum(pop),
+         prop_pop = pop / sum(pop),
+         mean_value = weighted.mean(value, w = pop),
+         rel_value = value / mean_value) |> 
+  arrange(metric, subgroup, year, rank) |> 
+  ungroup() |> 
+  select(rank,country, year, value, subgroup, metric, pop, prop_pop, prop_midpop, label)
+
+models <- prop_pop |> 
+  nest(data = -c(year, subgroup, metric)) |> 
+  mutate(sii_model = map(data, ~lm(value ~ prop_midpop, data = .x)),
+         mod_out = map(sii_model, broom::tidy, conf.int = TRUE))
+
+sii_results <- models |> 
+  unnest(mod_out) |> 
+  filter(term != "(Intercept)") |> 
+  ungroup() |> 
+  select(
+    year,
+    metric,
+    subgroup,
+    sii = estimate,
+    sii_se = std.error,
+    sii_cl = conf.low,
+    sii_cu = conf.high
+  ) |> 
+  left_join(multiplier_vals, by = "metric") |> 
+  mutate(
+    labels = label_vars[metric],
+    across(c(sii, sii_cl, sii_cu), ~ .x * multiplier)
+    ) 
+
+sii_results |> 
+  mutate(comparison = if_else(subgroup == "Total", "Total", "By sex")) |> 
+  ggplot(aes(year, sii, colour = subgroup, fill = subgroup)) +
+  geom_point() +
+  geom_line() +
+  geom_ribbon(aes(ymin = sii_cl, ymax = sii_cu), alpha = 0.2, colour = NA) +
+  facet_grid(labels ~ fct_rev(comparison), scales = "free_y") +
+  labs(caption = "*per 1,000 live births") +
+  ylab("Slope Index of Inequality") +
+  xlab("Year") +
+  theme_minimal() +
+  scale_colour_manual(
+    "Sex",
+    breaks = c("Female", "Male"),
+    values = c(
+      Female = sphsu_cols("Leaf", names = FALSE),
+      Male = sphsu_cols("Rust", names = FALSE),
+      Total = "black"
+    ),
+    aesthetics = c("fill", "colour")
+  )
+
+```
+
+RII is calculated as SII/mean value.
+
+```{r}
+mean_vals <- prop_pop |> 
+  group_by(year, metric, subgroup) |> 
+  summarise(mean_value = weighted.mean(value, w = pop), .groups = "drop")
+
+rii_results <- sii_results |> 
+  left_join(mean_vals, by = join_by(year, metric, subgroup)) |> 
+  mutate(rii = sii / mean_value,
+         rii_se = sii_se / mean_value,
+         # cl_rii = conf.low / mean_value,  # Test to see if same value
+         # cu_rii = conf.high / mean_value,
+         rii_cl = rii + qnorm(0.025) * rii_se,
+         rii_cu = rii + qnorm(0.975) * rii_se)
+
+rii_results |> 
+  mutate(comparison = if_else(subgroup == "Total", "Total", "By sex")) |> 
+  ggplot(aes(year, rii, colour = subgroup, fill = subgroup)) +
+  geom_point() +
+  geom_line() +
+  geom_ribbon(aes(ymin = rii_cl, ymax = rii_cu), alpha = 0.2, colour = NA) +
+  facet_grid(labels ~ fct_rev(comparison), scales = "free_y") +
+  labs(caption = "*per 1,000 live births") +
+  ylab("Relative Index of Inequality") +
+  xlab("Year") +
+  theme_minimal() +
+  scale_colour_manual(
+    "Sex",
+    breaks = c("Female", "Male"),
+    values = c(
+      Female = sphsu_cols("Leaf", names = FALSE),
+      Male = sphsu_cols("Rust", names = FALSE),
+      Total = "black"
+    ),
+    aesthetics = c("fill", "colour")
+  )
+```
+
+# Alternative 1
+
+SII calculated as before. RII calculated as a ratio of highest
+predicted/lowest predicted.
+
+As used in
+[`PHEindicatormethods`](https://search.r-project.org/CRAN/refmans/PHEindicatormethods/html/phe_sii.html)
+
+Here:
+
+-   `RII = 1` would indicate equality (as highest and lowest are equal)
+
+Infant mortality here is reversed by taking the inverse of the
+calculated value.
+
+This can give alarming results when: - The predicted lowest end is an
+infeasbily negative number (e.g. negative mortality rates in high-GDP
+countries) - The predicted lowest end is very very small, which gives an
+unpleasantly large ratio.
+
+Thus, results look OK for life expectancy but crazy for infant
+mortality:
+
+```{r}
+rii_results2 <- models |> 
+  mutate(predictions = map(sii_model, ~predict(.x, newdata = tibble(prop_midpop = c(0, 1))))) |> 
+  unnest_wider(predictions, names_sep = "pred") |> 
+  mutate(rii = predictionspred2 / predictionspred1) |> 
+  left_join(multiplier_vals, by = "metric") |> 
+  mutate(labels = label_vars[metric], rii = rii ^ multiplier)
+
+rii_results2 |> 
+    mutate(comparison = if_else(subgroup == "Total", "Total", "By sex")) |> 
+  ggplot(aes(year, rii, colour = subgroup, fill = subgroup)) +
+  geom_point() +
+  geom_line() +
+  facet_grid(labels ~ fct_rev(comparison), scales = "free_y") +
+  labs(caption = "*per 1,000 live births") +
+  ylab("Relative Index of Inequality") +
+  xlab("Year") +
+  theme_minimal() +
+  scale_colour_manual(
+    "Sex",
+    breaks = c("Female", "Male"),
+    values = c(
+      Female = sphsu_cols("Leaf", names = FALSE),
+      Male = sphsu_cols("Rust", names = FALSE),
+      Total = "black"
+    ),
+    aesthetics = c("fill", "colour")
+  )
+```
+
+# Alternative 2
+
+This uses the
+[WHOequity/healthequal](https://github.com/WHOequity/healthequal/)
+package method.
+
+SII/RII is calculated as a logistic regression in the case of infant
+mortality. Linear regression otherwise.
+
+Note that the `rii` method assumes the outcome value is a rate and
+computes odds to regress, but imputes the scale from the size of the
+estimate. So '80' would be interpreted as '80/100'. Infant mortality of
+'80/1000' is computed as odds of '80/20'. Life expectancy of '80' is
+interpreted as a linear value of '80 / 100 = 0.8)\`.
+
+This method also weights all countries by population estimates (other
+methods do not).
+
+::: callout-warning
+1990 is giving strange values!
+:::
+
+```{r}
+library(healthequal)
+
+out_models <- prop_pop |> 
+  nest(data = -c(metric, label, year, subgroup)) |> 
+  summarise(
+    sii = map(data, ~(sii(.x$value, .x$rank, .x$pop, linear = metric != "inf_mort"))),
+    rii = map(data, ~(rii(.x$value, .x$rank, .x$pop, linear = metric != "inf_mort"))),
+    .by = c(metric, year, subgroup, label)
+  ) |> 
+  unnest_wider(c(sii, rii), names_sep = "_") |> 
+  left_join(multiplier_vals, by = "metric") |> 
+  select(-ends_with("measure")) |> 
+  mutate(
+    across(starts_with("sii"), ~.x * multiplier),
+    across(starts_with("rii"), ~.x ^ multiplier)
+  ) 
+
+out_models |>
+  mutate(axis_labels = label_vars[metric],
+         comparison = if_else(subgroup == "Total", "Total", "By sex")) |> 
+  ggplot(aes(year, sii_estimate, colour = subgroup, fill = subgroup)) +
+  geom_point() +
+  geom_line() +
+  geom_ribbon(aes(ymin = sii_lowerci, ymax = sii_upperci), alpha = 0.2, colour = NA) +
+  facet_grid(axis_labels ~ fct_rev(comparison), scales = "free_y") +
+  ylab("Slope Index of Inequality") +
+  xlab("Year") +
+  theme_minimal() +
+  scale_colour_manual(
+    "Sex",
+    breaks = c("Female", "Male"),
+    values = c(
+      Female = SPHSUgraphs::sphsu_cols("Leaf", names = FALSE),
+      Male = SPHSUgraphs::sphsu_cols("Rust", names = FALSE),
+      Total = "black"
+    ),
+    aesthetics = c("fill", "colour")
+  )
+```
+
+```{r}
+out_models |>
+  mutate(axis_labels = label_vars[metric],
+         comparison = if_else(subgroup == "Total", "Total", "By sex")) |> 
+  ggplot(aes(year, rii_estimate, colour = subgroup, fill = subgroup)) +
+  geom_point() +
+  geom_line() +
+  geom_ribbon(aes(ymin = rii_lowerci, ymax = rii_upperci), alpha = 0.2, colour = NA) +
+  facet_grid(axis_labels ~ fct_rev(comparison), scales = "free_y") +
+  ylab("Relative Index of Inequality") +
+  xlab("Year") +
+  theme_minimal() +
+  scale_colour_manual(
+    "Sex",
+    breaks = c("Female", "Male"),
+    values = c(
+      Female = SPHSUgraphs::sphsu_cols("Leaf", names = FALSE),
+      Male = SPHSUgraphs::sphsu_cols("Rust", names = FALSE),
+      Total = "black"
+    ),
+    aesthetics = c("fill", "colour")
+  )
+```
+
+# A hybrid method
+
+For completeness, perhaps:
+
+-   SII as a linear regression for two life expectancy variables (linear
+    outcomes)
+-   SII as highest/lowest for life expectancy
+-   SII as either linear (difference) or logistic (also difference) for
+    infant mortality
+-   RII as logistic regression for infant mortality (as a rate out of
+    1,000)
+
+```{r}
+
+models_le <- prop_pop |> 
+  filter(metric != "inf_mort") |> 
+  nest(data = -c(year, subgroup, metric)) |> 
+  mutate(sii_model_ln = map(data, ~lm(value ~ prop_midpop, data = .x)),
+         mod_out_ln = map(sii_model_ln, return_est_cis, "difference"),
+         mod_out_ratio = map(sii_model_ln, return_est_cis, "ratio"))
+
+sii_results_le <- models_le |>
+  unnest(mod_out_ln) |>
+  select(
+    year,
+    metric,
+    subgroup,
+    sii = estimate,
+    sii_se = se,
+    sii_cl = conf.low,
+    sii_cu = conf.high
+  ) |>
+  left_join(multiplier_vals, by = "metric") |>
+  mutate(labels = label_vars[metric], across(c(sii, sii_cl, sii_cu), ~ .x * multiplier)) 
+
+models_im <- prop_pop |>
+  filter(metric == "inf_mort") |>
+  mutate(not_val = 1000 - value) |>
+  nest(data = -c(year, subgroup, metric)) |>
+  mutate(
+    sii_model_lg = map(
+      data,
+      ~ glm(
+          cbind(value, not_val) ~ prop_midpop,
+          family = quasibinomial("logit"),
+          data = .x
+      )
+    ),
+    sii_model_ln = map(
+      data,
+      ~ lm(
+        value ~ prop_midpop,
+        data = .x
+      )
+    ),
+    mod_out_lg = map(sii_model_lg, return_est_cis, comparison = "difference"),
+    mod_out_ln = map(sii_model_ln, return_est_cis, comparison = "difference"),
+    mod_out_ratio = map(sii_model_lg, return_est_cis, "lnratio")
+  )
+
+
+sii_results_im <- models_im |>
+  unnest(mod_out_lg) |> 
+  mutate(across(c(estimate, conf.low, conf.high), ~.x * -1000)) |> 
+   select(
+    year,
+    metric,
+    subgroup,
+    sii = estimate,
+    sii_se = se,
+    sii_cl = conf.low,
+    sii_cu = conf.high
+  )
+
+bind_rows(sii_results_le, sii_results_im) |> 
+    mutate(axis_labels = label_vars[metric],
+         comparison = if_else(subgroup == "Total", "Total", "By sex")) |> 
+  ggplot(aes(year, sii, colour = subgroup, fill = subgroup)) +
+  geom_point() +
+  geom_line() +
+  geom_ribbon(aes(ymin = sii_cl, ymax = sii_cu), alpha = 0.2, colour = NA) +
+  facet_grid(axis_labels ~ fct_rev(comparison), scales = "free_y") +
+  labs(caption = "*per 1,000 live births") +
+  ylab("Slope Index of Inequality") +
+  xlab("Year") +
+  theme_minimal() +
+  scale_colour_manual(
+    "Sex",
+    breaks = c("Female", "Male"),
+    values = c(
+      Female = sphsu_cols("Leaf", names = FALSE),
+      Male = sphsu_cols("Rust", names = FALSE),
+      Total = "black"
+    ),
+    aesthetics = c("fill", "colour")
+  )
+```
+
+```{r}
+rii_results_le <- models_le |> 
+  unnest(mod_out_ratio) |> 
+  select(
+    year,
+    metric,
+    subgroup,
+    rii = estimate,
+    rii_se = se,
+    rii_cl = conf.low,
+    rii_cu = conf.high
+  )
+
+rii_results_im <- models_im |> 
+  unnest(mod_out_ratio) |> 
+  mutate(
+    year,
+    metric,
+    subgroup,
+    rii = exp(estimate)^-1,
+    rii_se = se,
+    rii_cl = exp(conf.low)^-1,
+    rii_cu = exp(conf.high)^-1,
+    .keep = "none"
+  )
+
+bind_rows(rii_results_le, rii_results_im) |> 
+    mutate(axis_labels = label_vars[metric],
+         comparison = if_else(subgroup == "Total", "Total", "By sex")) |> 
+  ggplot(aes(year, rii, colour = subgroup, fill = subgroup)) +
+  geom_point() +
+  geom_line() +
+  geom_ribbon(aes(ymin = rii_cl, ymax = rii_cu), alpha = 0.2, colour = NA) +
+  facet_grid(axis_labels ~ fct_rev(comparison), scales = "free_y") +
+  labs(caption = "*per 1,000 live births") +
+  ylab("Relative Index of Inequality") +
+  xlab("Year") +
+  theme_minimal() +
+  scale_colour_manual(
+    "Sex",
+    breaks = c("Female", "Male"),
+    values = c(
+      Female = sphsu_cols("Leaf", names = FALSE),
+      Male = sphsu_cols("Rust", names = FALSE),
+      Total = "black"
+    ),
+    aesthetics = c("fill", "colour")
+  )
+```
+
+# Further
+
+PHS and PHE methods also account for potential heteroskedasticity by
+transforming outcome and rank by multiplying by the square root of the
+population proportion:
+
+$$
+Y * \sqrt a = \sqrt a + b * \sqrt a
+$$
+
+Where:
+
+-   $Y$ is the outcome
+-   $a$ is the proportion of the population in an area
+-   $b$ is the relative rank (0 to 1)
+
+Working with these transformed variables and a linear approach:
+
+```{r}
+transformed_pop <- prop_pop |>
+  mutate(
+    sqr_proportion_pop = sqrt(prop_pop),
+    relrank_sqr_proppop = prop_midpop * sqr_proportion_pop,
+    value_sqr_proppop = sqr_proportion_pop * value
+  )
+
+models <- transformed_pop |>
+  nest(data = -c(year, subgroup, metric)) |>
+  mutate(
+    sii_model = map(
+      data,
+      ~ lm(
+        value_sqr_proppop ~ sqr_proportion_pop + relrank_sqr_proppop + 0,
+        data = .
+      )
+    ),
+    mod_out_ln = map(
+      sii_model,
+      return_est_cis,
+      "difference",
+      list(relrank_sqr_proppop = c(0, 1))
+    ),
+    mod_out_ratio = map(
+      sii_model,
+      return_est_cis,
+      comparison = "ratio",
+      cross = TRUE,
+      independent_vars = list(sqr_proportion_pop = c(1, 1), relrank_sqr_proppop = c(0, 1))
+    )
+  )
+
+
+models |>
+  unnest(mod_out_ln) |>
+  select(
+    year,
+    metric,
+    subgroup,
+    sii = estimate,
+    sii_se = se,
+    sii_cl = conf.low,
+    sii_cu = conf.high
+  ) |>
+  left_join(multiplier_vals, by = "metric") |>
+  mutate(labels = label_vars[metric], across(c(sii, sii_cl, sii_cu), ~ .x * multiplier)) |> 
+  mutate(axis_labels = label_vars[metric],
+         comparison = if_else(subgroup == "Total", "Total", "By sex")) |> 
+  ggplot(aes(year, sii, colour = subgroup, fill = subgroup)) +
+  geom_point() +
+  geom_line() +
+  geom_ribbon(aes(ymin = sii_cl, ymax = sii_cu), alpha = 0.2, colour = NA) +
+  facet_grid(axis_labels ~ fct_rev(comparison), scales = "free_y") +
+  labs(caption = "*per 1,000 live births") +
+  ylab("Slope Index of Inequality") +
+  xlab("Year") +
+  theme_minimal() +
+  scale_colour_manual(
+    "Sex",
+    breaks = c("Female", "Male"),
+    values = c(
+      Female = sphsu_cols("Leaf", names = FALSE),
+      Male = sphsu_cols("Rust", names = FALSE),
+      Total = "black"
+    ),
+    aesthetics = c("fill", "colour")
+  )
+
+```
+
+```{r}
+
+models |> 
+  unnest(mod_out_ratio) |> 
+  left_join(multiplier_vals, by = "metric") |> 
+  mutate(
+    year,
+    metric,
+    subgroup,
+    rii = estimate ^ multiplier,
+    rii_se = se,
+    rii_cl = conf.low ^ multiplier,
+    rii_cu = conf.high ^ multiplier
+  ) |> 
+    mutate(axis_labels = label_vars[metric],
+         comparison = if_else(subgroup == "Total", "Total", "By sex")) |> 
+  ggplot(aes(year, rii, colour = subgroup, fill = subgroup)) +
+  geom_point() +
+  geom_line() +
+  geom_ribbon(aes(ymin = rii_cl, ymax = rii_cu), alpha = 0.2, colour = NA) +
+  facet_grid(axis_labels ~ fct_rev(comparison), scales = "free_y") +
+  labs(caption = "*per 1,000 live births") +
+  ylab("Relative Index of Inequality") +
+  xlab("Year") +
+  theme_minimal() +
+  scale_colour_manual(
+    "Sex",
+    breaks = c("Female", "Male"),
+    values = c(
+      Female = sphsu_cols("Leaf", names = FALSE),
+      Male = sphsu_cols("Rust", names = FALSE),
+      Total = "black"
+    ),
+    aesthetics = c("fill", "colour")
+  )
+```
+
+
+# Poisson approach
+
+Do infant mortality as a poisson regression (multiply by 10 and convert to integer).
+
+```{r}
+
+models_le <- prop_pop |> 
+  filter(metric != "inf_mort") |> 
+  nest(data = -c(year, subgroup, metric)) |> 
+  mutate(sii_model_ln = map(data, ~lm(value ~ prop_midpop, data = .x)),
+         mod_out_ln = map(sii_model_ln, return_est_cis, "difference"),
+         mod_out_ratio = map(sii_model_ln, return_est_cis, "ratio"))
+
+sii_results_le <- models_le |>
+  unnest(mod_out_ln) |>
+  select(
+    year,
+    metric,
+    subgroup,
+    sii = estimate,
+    sii_se = se,
+    sii_cl = conf.low,
+    sii_cu = conf.high
+  ) |>
+  left_join(multiplier_vals, by = "metric") |>
+  mutate(labels = label_vars[metric], across(c(sii, sii_cl, sii_cu), ~ .x * multiplier)) 
+
+models_im <- prop_pop |>
+  filter(metric == "inf_mort") |>
+  mutate(value = as.integer(10 * value)) |>
+  nest(data = -c(year, subgroup, metric)) |>
+  mutate(
+    sii_model_po = map(
+      data,
+      ~ glm(
+          value ~ prop_midpop,
+          family = poisson(),
+          data = .x
+      )
+    ),
+    mod_out_po = map(sii_model_po, return_est_cis, comparison = "difference"),
+    mod_out_ratio = map(sii_model_po, return_est_cis, "ratio")
+  )
+
+
+sii_results_im <- models_im |>
+  unnest(mod_out_po) |> 
+  mutate(across(c(estimate, conf.low, conf.high), ~.x / 10)) |> 
+   mutate(
+    year,
+    metric,
+    subgroup,
+    sii = estimate * -1,
+    sii_se = se,
+    sii_cl = conf.low * -1,
+    sii_cu = conf.high * -1,
+    .keep = "none"
+  )
+
+bind_rows(sii_results_le, sii_results_im) |> 
+    mutate(axis_labels = label_vars[metric],
+         comparison = if_else(subgroup == "Total", "Total", "By sex")) |> 
+  ggplot(aes(year, sii, colour = subgroup, fill = subgroup)) +
+  geom_point() +
+  geom_line() +
+  geom_ribbon(aes(ymin = sii_cl, ymax = sii_cu), alpha = 0.2, colour = NA) +
+  facet_grid(axis_labels ~ fct_rev(comparison), scales = "free_y") +
+  labs(caption = "*per 1,000 live births") +
+  ylab("Slope Index of Inequality") +
+  xlab("Year") +
+  theme_minimal() +
+  scale_colour_manual(
+    "Sex",
+    breaks = c("Female", "Male"),
+    values = c(
+      Female = sphsu_cols("Leaf", names = FALSE),
+      Male = sphsu_cols("Rust", names = FALSE),
+      Total = "black"
+    ),
+    aesthetics = c("fill", "colour")
+  )
+```
+
+```{r}
+rii_results_le <- models_le |> 
+  unnest(mod_out_ratio) |> 
+  select(
+    year,
+    metric,
+    subgroup,
+    rii = estimate,
+    rii_se = se,
+    rii_cl = conf.low,
+    rii_cu = conf.high
+  )
+
+rii_results_im <- models_im |> 
+  unnest(mod_out_ratio) |> 
+  mutate(
+    year,
+    metric,
+    subgroup,
+    rii = estimate ^ -1,
+    rii_se = se,
+    rii_cl = conf.low ^ -1,
+    rii_cu = conf.high ^ -1,
+    .keep = "none"
+  )
+
+bind_rows(rii_results_le, rii_results_im) |> 
+    mutate(axis_labels = label_vars[metric],
+         comparison = if_else(subgroup == "Total", "Total", "By sex")) |> 
+  ggplot(aes(year, rii, colour = subgroup, fill = subgroup)) +
+  geom_point() +
+  geom_line() +
+  geom_ribbon(aes(ymin = rii_cl, ymax = rii_cu), alpha = 0.2, colour = NA) +
+  facet_grid(axis_labels ~ fct_rev(comparison), scales = "free_y") +
+  labs(caption = "*per 1,000 live births") +
+  ylab("Relative Index of Inequality") +
+  xlab("Year") +
+  theme_minimal() +
+  scale_colour_manual(
+    "Sex",
+    breaks = c("Female", "Male"),
+    values = c(
+      Female = sphsu_cols("Leaf", names = FALSE),
+      Male = sphsu_cols("Rust", names = FALSE),
+      Total = "black"
+    ),
+    aesthetics = c("fill", "colour")
+  )
+```
+
