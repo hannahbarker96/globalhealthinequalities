@@ -81,6 +81,8 @@ Infant mortality rated are 'reversed' as higher rates indicate worse
 outcomes.
 :::
 
+## SII
+
 Linear model:
 
 $$
@@ -90,6 +92,7 @@ $$
 -   $intercept$ is the outcome at the (theoretical) 0-ranked country
 -   $\beta_1$ is the SII - the difference between the 0- and 1-ranked
     countries
+    
 
 Calculated yearly by subgroup for each outcome:
 
@@ -158,6 +161,8 @@ sii_results |>
 
 ```
 
+## RII
+
 RII is calculated as SII/mean value.
 
 ```{r}
@@ -217,6 +222,8 @@ infeasbily negative number (e.g. negative mortality rates in high-GDP
 countries) - The predicted lowest end is very very small, which gives an
 unpleasantly large ratio.
 
+## RII
+
 Thus, results look OK for life expectancy but crazy for infant
 mortality:
 
@@ -268,6 +275,8 @@ interpreted as a linear value of '80 / 100 = 0.8)\`.
 This method also weights all countries by population estimates (other
 methods do not).
 
+## SII
+
 ::: callout-warning
 1990 is giving strange values!
 :::
@@ -313,6 +322,8 @@ out_models |>
   )
 ```
 
+## RII
+
 ```{r}
 out_models |>
   mutate(axis_labels = label_vars[metric],
@@ -348,6 +359,8 @@ For completeness, perhaps:
     infant mortality
 -   RII as logistic regression for infant mortality (as a rate out of
     1,000)
+    
+## SII
 
 ```{r}
 
@@ -435,6 +448,8 @@ bind_rows(sii_results_le, sii_results_im) |>
   )
 ```
 
+##  RII
+
 ```{r}
 rii_results_le <- models_le |> 
   unnest(mod_out_ratio) |> 
@@ -500,6 +515,8 @@ Where:
 -   $Y$ is the outcome
 -   $a$ is the proportion of the population in an area
 -   $b$ is the relative rank (0 to 1)
+
+## SII
 
 Working with these transformed variables and a linear approach:
 
@@ -574,6 +591,8 @@ models |>
 
 ```
 
+## RII
+
 ```{r}
 
 models |> 
@@ -615,6 +634,8 @@ models |>
 # Poisson approach
 
 Do infant mortality as a poisson regression (multiply by 10 and convert to integer).
+
+## SII
 
 ```{r}
 
@@ -694,6 +715,8 @@ bind_rows(sii_results_le, sii_results_im) |>
     aesthetics = c("fill", "colour")
   )
 ```
+
+## RII
 
 ```{r}
 rii_results_le <- models_le |> 
