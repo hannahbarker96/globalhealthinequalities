@@ -8,9 +8,13 @@ editor:
     wrap: 72
 ---
 
-```{r, include = FALSE}
+```{r}
+#| code-fold: true
+#| output: false
+#| code-summary: "Setup code"
 source("R/update_data_from_api.R")
 library(SPHSUgraphs)
+library(gt)
 
 multiplier_vals <- tibble::tribble(
   ~metric, ~multiplier,
@@ -92,7 +96,6 @@ $$
 -   $intercept$ is the outcome at the (theoretical) 0-ranked country
 -   $\beta_1$ is the SII - the difference between the 0- and 1-ranked
     countries
-    
 
 Calculated yearly by subgroup for each outcome:
 
@@ -359,7 +362,7 @@ For completeness, perhaps:
     infant mortality
 -   RII as logistic regression for infant mortality (as a rate out of
     1,000)
-    
+
 ## SII
 
 ```{r}
@@ -448,7 +451,7 @@ bind_rows(sii_results_le, sii_results_im) |>
   )
 ```
 
-##  RII
+## RII
 
 ```{r}
 rii_results_le <- models_le |> 
@@ -630,10 +633,10 @@ models |>
   )
 ```
 
-
 # Poisson approach
 
-Do infant mortality as a poisson regression (multiply by 10 and convert to integer).
+Do infant mortality as a poisson regression (multiply by 10 and convert
+to integer).
 
 ## SII
 
@@ -674,7 +677,8 @@ models_im <- prop_pop |>
       )
     ),
     mod_out_po = map(sii_model_po, return_est_cis, comparison = "difference"),
-    mod_out_ratio = map(sii_model_po, return_est_cis, "ratio")
+    mod_out_ratio = map(sii_model_po, return_est_cis, "ratio"),
+    labels = label_vars[metric]
   )
 
 
@@ -689,6 +693,7 @@ sii_results_im <- models_im |>
     sii_se = se,
     sii_cl = conf.low * -1,
     sii_cu = conf.high * -1,
+    labels = labels,
     .keep = "none"
   )
 
@@ -728,8 +733,9 @@ rii_results_le <- models_le |>
     rii = estimate,
     rii_se = se,
     rii_cl = conf.low,
-    rii_cu = conf.high
-  )
+    rii_cu = conf.high,
+  ) |> 
+  mutate(labels = label_vars[metric])
 
 rii_results_im <- models_im |> 
   unnest(mod_out_ratio) |> 
@@ -741,6 +747,7 @@ rii_results_im <- models_im |>
     rii_se = se,
     rii_cl = conf.low ^ -1,
     rii_cu = conf.high ^ -1,
+    labels = labels,
     .keep = "none"
   )
 
@@ -768,3 +775,36 @@ bind_rows(rii_results_le, rii_results_im) |>
   )
 ```
 
+<details>
+
+<summary>Table of estimates</summary>
+
+```{r}
+bind_rows(sii_results_le, sii_results_im) |> 
+  left_join(bind_rows(rii_results_le, rii_results_im),
+            by = join_by(year, metric, subgroup, labels)) |>
+  mutate(
+    Outcome = label_vars[metric],
+    Subgroup = subgroup,
+    Year = year,
+    SII_est = round(sii, 2),
+    `SII_95%CI` = glue::glue(
+      "{lower}, {upper}",
+      lower = round(sii_cl, 2),
+      upper = round(sii_cu, 2)
+    ),
+    RII_est = round(rii, 2),
+    `RII_95%CI` = glue::glue(
+      "{lower}, {upper}",
+      lower = round(rii_cl, 2),
+      upper = round(rii_cu, 2)
+    ),
+    .keep = "none"
+  ) |>
+  group_by(Outcome) |>
+  gt() |>
+  tab_spanner_delim("_") |> 
+  tab_footnote("*per 1,000 live births")
+```
+
+</details>
